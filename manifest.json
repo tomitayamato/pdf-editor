@@ -1,0 +1,15 @@
+{
+  "name": "PDFエディタ",
+  "short_name": "PDFエディタ",
+  "description": "図面PDFの色分け・寸法・番号の書き込み（iPad版）",
+  "lang": "ja",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#e9e8e5",
+  "theme_color": "#f3f3f1",
+  "icons": [
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
