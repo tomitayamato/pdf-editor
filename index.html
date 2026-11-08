@@ -459,7 +459,8 @@ main#main:has(#pages.t-textsel) { touch-action: pan-x pan-y; -webkit-user-select
           <button class="sbtn primary" id="btnMerge2" style="padding:8px 18px;font-size:14px">結合して開く</button>
         </div>
         <p class="note">ファイルはこのiPad内だけで処理され、外部には一切送信されません。<br>
-          操作：ピンチで拡大・縮小／2本指で移動／長押しでメニュー（選択ツール）／ダブルタップで編集・確定</p>
+          操作：ピンチで拡大・縮小／2本指で移動／2本指タップで元に戻す・3本指タップでやり直し<br>
+          選択ツールで文字を長押し→離すと編集／それ以外を長押しでメニュー／ダブルタップで編集・確定</p>
         <div class="btnrow" style="justify-content:center;gap:8px;margin-top:6px">
           <button class="sbtn" id="btnExportSettings" title="テンプレート・既定値・素材などを1つのファイルに書き出します（PC版とiPad版の間で引っ越すとき用）">設定を書き出す</button>
           <button class="sbtn" id="btnImportSettings" title="書き出した設定ファイルを読み込みます">設定を読み込む</button>
@@ -6209,7 +6210,7 @@ initEngine().then(engineReady);
     clearTimeout(G.timer);
     clearLongPress();
     if (G.pinch) endPinch();
-    G.pts.clear(); G.mode = null; G.held = null; G.fwd = null; G.pan = null;
+    G.pts.clear(); G.mode = null; G.held = null; G.fwd = null; G.pan = null; G.multi = null; G.lpEdit = null;
   }
 
   // ---- 長押し（選択ツール）＝右クリックメニュー ----
@@ -6221,6 +6222,17 @@ initEngine().then(engineReady);
   }
   function checkLongPressMove(e) {
     if (G.lp && G.lp.h.pointerId === e.pointerId && Math.hypot(e.clientX - G.lp.h.clientX, e.clientY - G.lp.h.clientY) > 9) clearLongPress();
+  }
+  // 長押しした所にある「文字」（テキスト・番号・寸法線の数値）。なければ null
+  function textAtPoint(h) {
+    const wrap = h.target.parentElement, p = wrap && wrap._page;
+    if (!p) return null;
+    const r = wrap.getBoundingClientRect();
+    const i = hitTest(p, (h.clientX - r.left) / zoom, (h.clientY - r.top) / zoom);
+    const a = i >= 0 ? p.annots[i] : null;
+    if (!a) return null;
+    const linked = a.type === 'dim' && a.link && p.annots.some(t => t.type === 'text' && t.link === a.link);
+    return a.type === 'text' || (a.type === 'dim' && (linked || a.text)) ? { p, i } : null;
   }
   function fireLongPress() {
     const L = G.lp;
@@ -6234,9 +6246,39 @@ initEngine().then(engineReady);
       L.h.target.dispatchEvent(makePointer('pointercancel', L.h));
       G.lpDone = L.h.pointerId;
     }
+    const t = textAtPoint(L.h);
+    if (t) {
+      // 文字の長押し＝編集。キーボードは指を離したとき（タップの中）でないと出ないので、ここでは選んで知らせるだけ
+      select(t.p.id, t.i);
+      G.lpEdit = { target: L.h.target, x: L.h.clientX, y: L.h.clientY };
+      toast('指を離すと編集します');
+      return;
+    }
     const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: L.h.clientX, clientY: L.h.clientY, button: 2 });
     synth.add(ev);
     L.h.target.dispatchEvent(ev);
+  }
+  // 文字を長押しして指を離したとき：編集を始める（ダブルクリックと同じ動き）
+  function startLongPressEdit() {
+    const E = G.lpEdit;
+    G.lpEdit = null;
+    if (!E || !E.target.isConnected) return;
+    const ev = new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: E.x, clientY: E.y, button: 0, detail: 2 });
+    synth.add(ev);
+    E.target.dispatchEvent(ev);
+  }
+
+  // ---- 2本指タップ＝元に戻す、3本指タップ＝やり直し ----
+  // 指をほとんど動かさず、すぐに離したときだけ（ピンチ・2本指の移動とは区別する）
+  function multiTapCheck() {
+    const M = G.multi;
+    G.multi = null;
+    if (!M || M.moved || M.max < 2 || performance.now() - M.t0 > 350) return;
+    if (M.max === 2) {
+      if (undoStack.length) { undo(); toast('元に戻しました（2本指タップ）'); } else toast('元に戻せる操作がありません');
+    } else {
+      if (redoStack.length) { redo(); toast('やり直しました（3本指タップ）'); } else toast('やり直せる操作がありません');
+    }
   }
 
   // ---- ダブルタップ＝ダブルクリック ----
@@ -6277,7 +6319,9 @@ initEngine().then(engineReady);
     if (e.isPrimary && G.pts.size) resetGesture();
     if (tool === 'textsel' && !G.pts.size) return;   // 文字の選択は iPad 標準の操作のまま
     stop(e);
-    G.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    G.pts.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY });
+    if (G.pts.size === 1) G.multi = { t0: performance.now(), max: 1, moved: false };
+    else if (G.multi) G.multi.max = Math.max(G.multi.max, G.pts.size);
     if (G.pts.size === 1) {
       stopInertia();
       const h = copyOf(e);
@@ -6313,6 +6357,7 @@ initEngine().then(engineReady);
     const p = G.pts.get(e.pointerId);
     if (!p) return;
     p.x = e.clientX; p.y = e.clientY;
+    if (G.multi && Math.hypot(p.x - p.x0, p.y - p.y0) > 12) G.multi.moved = true;
     checkLongPressMove(e);
     if (G.mode === 'pan') { stop(e); movePan(e); return; }
     if (G.mode === 'pinch') { stop(e); movePinch(); return; }
@@ -6333,7 +6378,11 @@ initEngine().then(engineReady);
     if (synth.has(e)) return;
     if (e.pointerType === 'mouse') { applyMods(e); return; }
     if (e.pointerType === 'pen') {
-      if (G.lpDone === e.pointerId) { G.lpDone = null; G.blockClickUntil = performance.now() + 600; stop(e); return; }
+      if (G.lpDone === e.pointerId) {
+        G.lpDone = null; G.blockClickUntil = performance.now() + 600; stop(e);
+        if (e.type === 'pointerup') startLongPressEdit(); else G.lpEdit = null;
+        return;
+      }
       clearLongPress();
       applyMods(e);
       if (e.type === 'pointerup') detectDoubleTap(e, G.penDown);
@@ -6365,9 +6414,13 @@ initEngine().then(engineReady);
       if (e.type === 'pointerup') detectDoubleTap(e, G.down);
     } else {
       stop(e);
-      if (mode === 'lpdone') G.blockClickUntil = performance.now() + 600;
+      if (mode === 'lpdone') {
+        G.blockClickUntil = performance.now() + 600;
+        if (e.type === 'pointerup') startLongPressEdit(); else G.lpEdit = null;
+      }
     }
     G.mode = G.pts.size ? 'done' : null;
+    if (!G.pts.size) multiTapCheck();
   };
   window.addEventListener('pointerup', onUp, true);
   window.addEventListener('pointercancel', onUp, true);
